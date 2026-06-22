@@ -129,16 +129,16 @@ class AgentHandler(BaseHTTPRequestHandler):
         pass
 
 def main():
+    # Startup: no external API calls here.
+    # All Claude/GreenAPI calls happen inside do_POST when webhooks arrive.
     print("=" * 50)
     print("idobetz AI Agent")
     print("Port: " + str(SERVER_PORT))
-    print("Ready!")
+    print("Instance: " + str(GREENAPI_INSTANCE))
+    print("Ready to receive webhooks!")
     print("=" * 50)
     server = HTTPServer(("0.0.0.0", SERVER_PORT), AgentHandler)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("Stopped.")
+    server.serve_forever()
 
 if __name__ == "__main__":
     main()
