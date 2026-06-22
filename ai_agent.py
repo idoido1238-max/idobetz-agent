@@ -5,12 +5,12 @@ import json
 import time
 import os
 
-GREENAPI_INSTANCE = "7107659046"
-GREENAPI_TOKEN = "b2e18cfe01024a64a311bd08000d400e64a744292b664c1780"
-GREENAPI_URL = "https://7107.api.greenapi.com"
-CLAUDE_API_KEY = "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"
+GREENAPI_INSTANCE = os.environ.get("GREENAPI_INSTANCE")
+GREENAPI_TOKEN = os.environ.get("GREENAPI_TOKEN")
+GREENAPI_URL = os.environ.get("GREENAPI_URL", "https://7107.api.greenapi.com")
+CLAUDE_API_KEY = os.environ.get("CLAUDE_API_KEY")
 CLAUDE_MODEL = "claude-sonnet-4-6"
-OWNER_PHONE = "972527777927"
+OWNER_PHONE = os.environ.get("OWNER_PHONE")
 SERVER_PORT = int(os.environ.get("PORT", 8081))
 
 conversation_history = {}
