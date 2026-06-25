@@ -42,6 +42,23 @@ KAMADO_SKUS = ["akamado21", "akamado16", "akamado13"]
 agent_active = False
 conversation_history = {}
 products_cache = ""   # נשמר כאן טקסט המוצרים, מתעדכן כל שעה
+learned_notes = []    # לקחים שהבעלים מלמד דרך וואטסאפ
+LEARN_FILE = "/tmp/learned_notes.json"
+
+def load_learned():
+    global learned_notes
+    try:
+        with open(LEARN_FILE, "r", encoding="utf-8") as f:
+            learned_notes = json.load(f)
+    except:
+        learned_notes = []
+
+def save_learned():
+    try:
+        with open(LEARN_FILE, "w", encoding="utf-8") as f:
+            json.dump(learned_notes, f, ensure_ascii=False)
+    except Exception as e:
+        print("save_learned error: " + str(e))
 DEFAULT_PROMPT = "אתה סוכן AI של idobetz - חנות ציוד מטבח. דבר עברית, קצר וידידותי."
 
 # ============ קריאת prompt מ-GitHub ============
@@ -55,7 +72,11 @@ def get_system_prompt():
     # מוסיף את המוצרים העדכניים
     if products_cache:
         base += "\n\n== מוצרים זמינים כעת (מתעדכן אוטומטית) ==\n" + products_cache
-    base += "\n\n== חשוב == אם שואלים כמה יחידות יש במלאי או כמה נמכרו - אל תענה על המספר, אמור שאתה לא חושף נתוני מלאי אך המוצר זמin/לא זמין."
+    base += "\n\n== חשוב == אם שואלים כמה יחידות יש במלאי או כמה נמכרו - אל תענה על המספר, אמור שאתה לא חושף נתוני מלאי אך המוצר זמין/לא זמין."
+    if learned_notes:
+        base += "\n\n== תיקונים והנחיות נוספות מהבעלים (חשוב לפעול לפיהם) ==\n"
+        for i, note in enumerate(learned_notes, 1):
+            base += str(i) + ". " + note + "\n"
     return base
 
 # ============ משיכת מוצרים מ-iStores ============
@@ -69,6 +90,13 @@ def fetch_products():
         with urllib.request.urlopen(req, timeout=20) as r:
             data = json.loads(r.read().decode("utf-8"))
         products = data.get("Products", data.get("products", []))
+        # דיבאג: מדפיס מבנה של מוצר אחד עם מבצע
+        for dp in products[:5]:
+            if isinstance(dp, dict):
+                sku_dbg = dp.get("sku", dp.get("model", ""))
+                if "adivmk6618" in str(sku_dbg).lower():
+                    print("DEBUG product keys: " + str(list(dp.keys())))
+                    print("DEBUG price: " + str(dp.get("price")) + " special: " + str(dp.get("special")) + " product_special: " + str(dp.get("product_special")))
         lines = []
         for p in products:
             if not isinstance(p, dict):
@@ -82,14 +110,27 @@ def fetch_products():
                         name = d.get("name"); break
             if not name:
                 name = p.get("name", p.get("model", ""))
-            # מחיר + מבצע
+            # מחיר + מבצע (בודק מבנים שונים)
             price = p.get("price", "")
             special = ""
-            sp = p.get("product_special", p.get("special", ""))
-            if sp and isinstance(sp, list) and len(sp) > 0:
-                special = sp[0].get("price", "") if isinstance(sp[0], dict) else ""
-            elif sp and not isinstance(sp, list):
-                special = str(sp)
+            # נסיון 1: product_special / special / special_price
+            for key in ["special", "product_special", "special_price", "price_special"]:
+                sp = p.get(key)
+                if sp:
+                    if isinstance(sp, list) and len(sp) > 0:
+                        item = sp[0]
+                        if isinstance(item, dict):
+                            special = item.get("price", item.get("special", item.get("value", "")))
+                        else:
+                            special = str(item)
+                    elif isinstance(sp, dict):
+                        special = sp.get("price", sp.get("special", sp.get("value", "")))
+                    else:
+                        special = str(sp)
+                    if special and str(special) not in ["0", "0.0000", "0.00", ""]:
+                        break
+                    else:
+                        special = ""
             # מלאי
             qty = p.get("quantity", 0)
             try:
@@ -125,17 +166,28 @@ def track_delivery(order_id):
         url = LIONWHEEL_URL + "/tasks/by_order_id/" + str(order_id) + "?key=" + LIONWHEEL_KEY
         with urllib.request.urlopen(urllib.request.Request(url), timeout=15) as r:
             data = json.loads(r.read().decode("utf-8"))
-        # מחזיר תאריך משלוח
+        print("LionWheel response for " + str(order_id) + ": " + json.dumps(data, ensure_ascii=False)[:300])
+        # מחלץ את המשימה
         task = data
-        if isinstance(data, list) and len(data) > 0:
-            task = data[0]
-        if isinstance(data, dict) and "tasks" in data:
-            tasks = data["tasks"]
-            task = tasks[0] if tasks else None
-        if not task:
+        if isinstance(data, dict):
+            if "tasks" in data:
+                tasks = data["tasks"]
+                task = tasks[0] if tasks else None
+            elif "task" in data:
+                task = data["task"]
+            elif "response" in data:
+                task = data["response"]
+                if isinstance(task, list):
+                    task = task[0] if task else None
+        elif isinstance(data, list):
+            task = data[0] if data else None
+        if not task or not isinstance(task, dict):
             return None
-        dropoff = task.get("dropoff_at", task.get("pickup_at", ""))
+        dropoff = task.get("dropoff_at", task.get("pickup_at", task.get("date", "")))
         return {"date": dropoff}
+    except urllib.error.HTTPError as e:
+        print("track_delivery HTTP " + str(e.code))
+        return None
     except Exception as e:
         print("track_delivery error: " + str(e))
         return None
@@ -239,6 +291,31 @@ def handle_new_order(order):
     send_whatsapp(OWNER_PHONE, "🔔 הזמנה חדשה!\nטלפון: " + str(phone) + "\nמספר: " + str(order_id))
 
 # ============ סוכן AI ============
+DELIVERY_TOOL = {
+    "name": "check_delivery",
+    "description": "בודק סטטוס ותאריך משלוח של הזמנה לפי מספר הזמנה. השתמש בזה כשלקוח שואל מתי ההזמנה שלו מגיעה, איפה ההזמנה, או על סטטוס משלוח, ונתן מספר הזמנה.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "order_id": {"type": "string", "description": "מספר ההזמנה שהלקוח נתן"}
+        },
+        "required": ["order_id"]
+    }
+}
+
+def call_claude_api(messages):
+    data = json.dumps({
+        "model": CLAUDE_MODEL, "max_tokens": 600,
+        "system": get_system_prompt(), "messages": messages,
+        "tools": [DELIVERY_TOOL]
+    }, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("x-api-key", CLAUDE_API_KEY)
+    req.add_header("anthropic-version", "2023-06-01")
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read().decode("utf-8"))
+
 def ask_claude(phone, msg):
     if not CLAUDE_API_KEY:
         return "שגיאה: אין מפתח Claude"
@@ -247,17 +324,34 @@ def ask_claude(phone, msg):
     conversation_history[phone].append({"role": "user", "content": msg})
     if len(conversation_history[phone]) > 20:
         conversation_history[phone] = conversation_history[phone][-20:]
-    data = json.dumps({"model": CLAUDE_MODEL, "max_tokens": 600, "system": get_system_prompt(), "messages": conversation_history[phone]}, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=data, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("x-api-key", CLAUDE_API_KEY)
-    req.add_header("anthropic-version", "2023-06-01")
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            result = json.loads(r.read().decode("utf-8"))
-            reply = result["content"][0]["text"]
-            conversation_history[phone].append({"role": "assistant", "content": reply})
-            return reply
+        result = call_claude_api(conversation_history[phone])
+        # בדיקה אם Claude רוצה להשתמש בכלי
+        if result.get("stop_reason") == "tool_use":
+            # שומר את בקשת הכלי
+            conversation_history[phone].append({"role": "assistant", "content": result["content"]})
+            tool_results = []
+            for block in result["content"]:
+                if block.get("type") == "tool_use" and block.get("name") == "check_delivery":
+                    order_id = block["input"].get("order_id", "")
+                    info = track_delivery(order_id)
+                    if info and info.get("date"):
+                        res_text = "תאריך משלוח מתוכנן: " + str(info["date"]) + ". ציין שזה מה שמופיע במערכת כרגע, ייתכנו שינויים, ושהלקוח יקבל הודעה מחברת המשלוחים יום לפני."
+                    else:
+                        res_text = "לא נמצאה הזמנה עם המספר הזה במערכת המשלוחים. בקש מהלקוח לוודא את המספר, או הצע להעביר לנציג."
+                    tool_results.append({"type": "tool_result", "tool_use_id": block["id"], "content": res_text})
+            conversation_history[phone].append({"role": "user", "content": tool_results})
+            # קריאה שנייה לקבלת התשובה הסופית
+            result = call_claude_api(conversation_history[phone])
+        # מחלץ את הטקסט
+        reply = ""
+        for block in result.get("content", []):
+            if block.get("type") == "text":
+                reply += block["text"]
+        if not reply:
+            reply = "מצטערים, יש תקלה זמנית."
+        conversation_history[phone].append({"role": "assistant", "content": reply})
+        return reply
     except urllib.error.HTTPError as e:
         body = ""
         try: body = e.read().decode("utf-8")
@@ -307,8 +401,33 @@ class Handler(BaseHTTPRequestHandler):
                     agent_active = True; send_whatsapp(phone, "✅ הסוכן הופעל!")
                 elif is_owner and ("סוכן OFF" in msg or "סוכן off" in msg.lower()):
                     agent_active = False; send_whatsapp(phone, "⛔ הסוכן כובה.")
+                elif is_owner and msg.strip().startswith("למד:"):
+                    note = msg.split("למד:", 1)[1].strip()
+                    if note:
+                        learned_notes.append(note)
+                        save_learned()
+                        send_whatsapp(phone, "✅ למדתי! (סה\"כ " + str(len(learned_notes)) + " תיקונים)\nהתיקון: " + note)
+                elif is_owner and msg.strip() == "רשימת תיקונים":
+                    if learned_notes:
+                        txt = "📚 התיקונים שלמדתי:\n\n"
+                        for i, n in enumerate(learned_notes, 1):
+                            txt += str(i) + ". " + n + "\n"
+                        send_whatsapp(phone, txt)
+                    else:
+                        send_whatsapp(phone, "עדיין לא למדתי תיקונים. שלח 'למד: ...' כדי ללמד אותי.")
+                elif is_owner and msg.strip().startswith("מחק תיקון"):
+                    try:
+                        num = int(msg.strip().split()[-1])
+                        if 1 <= num <= len(learned_notes):
+                            removed = learned_notes.pop(num-1)
+                            save_learned()
+                            send_whatsapp(phone, "🗑️ נמחק: " + removed)
+                        else:
+                            send_whatsapp(phone, "מספר לא תקין")
+                    except:
+                        send_whatsapp(phone, "שימוש: מחק תיקון [מספר]")
                 elif is_owner and "סטטוס" in msg:
-                    send_whatsapp(phone, "סטטוס: " + ("✅ פעיל" if agent_active else "⛔ כבוי") + "\nמוצרים בזיכרון: " + str(products_cache.count(chr(10))+1 if products_cache else 0))
+                    send_whatsapp(phone, "סטטוס: " + ("✅ פעיל" if agent_active else "⛔ כבוי") + "\nמוצרים: " + str(products_cache.count(chr(10))+1 if products_cache else 0) + "\nתיקונים שנלמדו: " + str(len(learned_notes)))
                 elif agent_active:
                     reply = ask_claude(phone, msg)
                     time.sleep(1)
@@ -324,6 +443,8 @@ if __name__ == "__main__":
     print("idobetz server starting on port " + str(PORT))
     print("CLAUDE_API_KEY set: " + str(bool(CLAUDE_API_KEY)))
     print("=" * 50)
+    load_learned()
+    print("Loaded " + str(len(learned_notes)) + " learned notes")
     # מתחיל משיכת מוצרים ברקע
     threading.Thread(target=product_updater, daemon=True).start()
     HTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
