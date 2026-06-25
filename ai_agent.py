@@ -69,9 +69,10 @@ def get_system_prompt():
     except Exception as e:
         print("Prompt load error: " + str(e))
         base = DEFAULT_PROMPT
-    # מוסיף את המוצרים העדכניים
+    # המוצרים והמחירים נמצאים כבר ב-prompt.txt (מדויקים).
+    # משיכת iStores משמשת רק לבדיקת מלאי (זמין/אזל), לא למחירים.
     if products_cache:
-        base += "\n\n== מוצרים זמינים כעת (מתעדכן אוטומטית) ==\n" + products_cache
+        base += "\n\n== בדיקת זמינות מלאי בלבד (לא מחירים!) ==\nהמחירים נמצאים ברשימת המחירים למעלה. המידע הבא הוא רק לבדיקה אם מוצר זמין:\n" + products_cache
     base += "\n\n== חשוב == אם שואלים כמה יחידות יש במלאי או כמה נמכרו - אל תענה על המספר, אמור שאתה לא חושף נתוני מלאי אך המוצר זמין/לא זמין."
     if learned_notes:
         base += "\n\n== תיקונים והנחיות נוספות מהבעלים (חשוב לפעול לפיהם) ==\n"
@@ -138,13 +139,8 @@ def fetch_products():
             except:
                 in_stock = True
             stock_txt = "במלאי" if in_stock else "אזל"
-            # בונה שורה
-            line = "- " + str(name)
-            if special and str(special) not in ["0", "0.0000", ""]:
-                line += " | מחיר מבצע: " + str(special) + " ש\"ח (במקום " + str(price) + ")"
-            elif price:
-                line += " | מחיר: " + str(price) + " ש\"ח"
-            line += " | " + stock_txt
+            # בונה שורה - רק שם ומלאי, בלי מחיר (המחירים ב-prompt)
+            line = "- " + str(name) + " | " + stock_txt
             lines.append(line)
         if lines:
             products_cache = "\n".join(lines)
